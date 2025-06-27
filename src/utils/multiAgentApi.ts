@@ -49,44 +49,7 @@ const VITE_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const PICA_SECRET_KEY = import.meta.env.VITE_PICA_SECRET_KEY;
 const PICA_TAVILY_CONNECTION_KEY = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
 
-// Helper to add inline citations to Gemini response text
-type GeminiCitation = { uri: string; index: number };
-function addCitations(response: any): { text: string; citations: GeminiCitation[] } {
-  let text = response.text || '';
-  const supports = response.candidates?.[0]?.groundingMetadata?.groundingSupports || [];
-  const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  const citations: GeminiCitation[] = [];
-  
-  // Sort supports by end_index in descending order to avoid shifting issues when inserting.
-  const sortedSupports = [...supports].sort(
-    (a: any, b: any) => (b.segment?.endIndex ?? 0) - (a.segment?.endIndex ?? 0)
-  );
-  
-  for (const support of sortedSupports) {
-    const endIndex = support.segment?.endIndex;
-    if (endIndex === undefined || !support.groundingChunkIndices?.length) continue;
-    
-    const citationLinks = support.groundingChunkIndices
-      .map((i: number) => {
-        const uri = chunks[i]?.web?.uri;
-        if (uri) {
-          citations.push({ uri, index: i + 1 });
-          return `[${i + 1}](${uri})`;
-        }
-        return null;
-      })
-      .filter(Boolean);
-    
-    if (citationLinks.length > 0) {
-      const citationString = citationLinks.join(", ");
-      text = text.slice(0, endIndex) + citationString + text.slice(endIndex);
-    }
-  }
-  
-  return { text, citations };
-}
-
-// Gemini search using @google/genai
+// Gemini search using @google/genai with proper configuration
 async function searchWithGemini(query: string): Promise<MultiAgentResponse | null> {
   try {
     console.log('Starting Gemini search with query:', query);
@@ -98,38 +61,37 @@ async function searchWithGemini(query: string): Promise<MultiAgentResponse | nul
     }
     
     const startTime = Date.now();
-    const ai = new GoogleGenAI(VITE_GEMINI_API_KEY);
+    const genAI = new GoogleGenAI(VITE_GEMINI_API_KEY);
     
-    // Enhanced system prompt for card-based, concise, multi-section markdown output
-    const systemPrompt = `You are an AI news and current affairs search assistant with real-time web access. 
-
-When answering, ALWAYS:
-- Structure your response as a set of concise, clearly separated sections using markdown headings (## or ###) for each aspect, fact, or angle relevant to the query.
-- Each section should be brief, focused, and suitable for display in a card (2-6 sentences or bullet points per section).
-- Use bullet points, short lists, or concise explanations instead of long paragraphs.
-- Avoid repetition and keep the overall answer as short and visually scannable as possible.
-- If possible, include sections like "Key Facts", "Background", "Recent Developments", "Analysis", etc., as appropriate for the query.
-- Use markdown formatting for clarity.
-- If you cite sources, use markdown links.
-
-User Query: ${query}`;
-
-    const model = ai.getGenerativeModel({ 
+    // Create the model with proper configuration
+    const model = genAI.getGenerativeModel({ 
       model: "gemini-1.5-flash",
-      tools: [{ googleSearchRetrieval: {} }],
       generationConfig: {
         candidateCount: 1,
-        maxOutputTokens: 512,
-        temperature: 0.2,
+        maxOutputTokens: 1024,
+        temperature: 0.3,
       },
     });
 
+    // Enhanced prompt for news search
+    const prompt = `You are a news search assistant. Please provide a comprehensive answer about: "${query}"
+
+Structure your response with clear sections using markdown headings (## or ###). Include:
+- Key facts and current developments
+- Background context if relevant
+- Recent news and updates
+- Analysis or implications
+
+Keep each section concise (2-4 sentences) and use bullet points where appropriate. Focus on the most current and relevant information available.
+
+Query: ${query}`;
+
     console.log('Sending request to Gemini...');
-    const result = await model.generateContent(systemPrompt);
-    const response = await result.response;
+    const result = await model.generateContent(prompt);
+    const response = result.response;
     const responseTime = (Date.now() - startTime) / 1000;
     
-    console.log('Gemini response received:', response);
+    console.log('Gemini response received');
     
     const text = response.text();
     if (!text?.trim()) {
@@ -137,29 +99,31 @@ User Query: ${query}`;
       return null;
     }
     
-    const { text: processedText, citations } = addCitations({ text, candidates: response.candidates });
-    
-    let results: TavilySearchResult[] | undefined = undefined;
-    if (citations.length > 0) {
-      results = citations.map((c) => ({
-        title: `Source [${c.index}]`,
-        url: c.uri,
-        content: c.uri,
-        score: 1,
-      }));
-    }
-    
     console.log('Gemini search successful');
     return {
       source: "gemini",
-      answer: processedText,
+      answer: text,
       query,
       response_time: responseTime,
-      results,
+      results: undefined, // Gemini doesn't provide separate search results in this mode
       raw_response: response,
     };
   } catch (error) {
     console.error("Gemini search failed:", error);
+    
+    // Check for specific error types
+    if (error instanceof Error) {
+      if (error.message.includes('API_KEY_INVALID') || error.message.includes('401')) {
+        throw new Error('Invalid Gemini API key. Please check your VITE_GEMINI_API_KEY environment variable.');
+      }
+      if (error.message.includes('QUOTA_EXCEEDED') || error.message.includes('429')) {
+        throw new Error('Gemini API quota exceeded. Please try again later or check your billing.');
+      }
+      if (error.message.includes('SAFETY')) {
+        throw new Error('Content was blocked by Gemini safety filters. Please try a different query.');
+      }
+    }
+    
     return null;
   }
 }
@@ -174,7 +138,7 @@ export async function searchWithGeminiOnly(query: string): Promise<MultiAgentRes
   }
   
   // If Gemini fails, throw an error instead of falling back
-  throw new Error('Gemini AI is unable to access current information for this query. Please enable Tavily fallback for enhanced search capabilities.');
+  throw new Error('Gemini AI is unable to process this query. Please try a different search term or enable Tavily fallback for enhanced search capabilities.');
 }
 
 async function searchWithTavily(query: string): Promise<MultiAgentResponse> {

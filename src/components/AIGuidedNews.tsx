@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Bot, Sparkles, Clock, ExternalLink, AlertCircle, Loader2, Zap, Globe, Settings, Key } from 'lucide-react';
+import { Search, Bot, Sparkles, Clock, ExternalLink, AlertCircle, Loader2, Zap, Globe, Settings, Key, CheckCircle } from 'lucide-react';
 import { multiAgentNewsSearch, searchWithGeminiOnly, getCategoryQuery } from '../utils/multiAgentApi';
 // @ts-ignore: No types for 'marked' yet
 import { marked } from 'marked';
@@ -249,6 +249,24 @@ export default function AIGuidedNews() {
           </div>
         </header>
 
+        {/* API Key Status */}
+        {apiStatus.hasAny && (
+          <div className="max-w-4xl mx-auto mb-8">
+            <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+              <div className="flex items-center">
+                <CheckCircle className="text-green-600 mr-3" size={20} />
+                <div>
+                  <h3 className="text-green-800 font-medium">API Configuration Ready</h3>
+                  <p className="text-green-600 text-sm">
+                    {apiStatus.hasGemini && 'Gemini AI is configured. '}
+                    {apiStatus.hasTavily && 'Tavily search is available as fallback.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* API Key Status Warning */}
         {!apiStatus.hasAny && (
           <div className="max-w-4xl mx-auto mb-8">
@@ -413,17 +431,18 @@ export default function AIGuidedNews() {
             {/* AI Answer */}
             {searchResponse.answer && (
               <div className="max-w-4xl mx-auto mb-8">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {splitMarkdownSections(searchResponse.answer).map((section, idx) => (
-                    <article key={idx} className="bg-white/80 backdrop-blur-sm rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden group">
-                      <div className="p-6">
-                        {section.title && <h4 className="text-lg font-semibold text-gray-900 mb-2 line-clamp-2 group-hover:text-purple-600 transition-colors">{section.title}</h4>}
-                        <div className="text-gray-700 text-sm mb-2 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: marked.parse(section.content) }} />
-                      </div>
-                    </article>
-                  ))}
+                <div className="bg-white/80 backdrop-blur-sm rounded-xl shadow-lg p-6 mb-4">
+                  <div className="flex items-center mb-4">
+                    {getSourceIcon(searchResponse.source)}
+                    <h3 className="text-lg font-semibold text-gray-900 ml-2">
+                      {getSourceName(searchResponse.source)} Response
+                    </h3>
+                  </div>
+                  <div className="prose prose-sm max-w-none text-gray-700" 
+                       dangerouslySetInnerHTML={{ __html: marked.parse(searchResponse.answer) }} />
                 </div>
-                <div className="flex items-center justify-between text-gray-500 text-sm mt-4">
+                
+                <div className="flex items-center justify-between text-gray-500 text-sm">
                   <div className="flex items-center">
                     <Clock size={14} className="mr-1" />
                     Response time: {searchResponse.response_time.toFixed(2)}s
@@ -489,7 +508,7 @@ export default function AIGuidedNews() {
                   <div>
                     <h3 className="text-blue-800 font-medium">Gemini Response</h3>
                     <p className="text-blue-600 text-sm">
-                      Google Gemini provided a direct answer without additional source links.
+                      Google Gemini provided a direct answer based on its training data and knowledge.
                     </p>
                   </div>
                 </div>
