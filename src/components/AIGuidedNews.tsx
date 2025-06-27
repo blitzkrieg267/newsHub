@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Bot, Sparkles, Clock, ExternalLink, AlertCircle, Loader2, Zap, Globe, Settings, Key, CheckCircle } from 'lucide-react';
+import { Search, Bot, Sparkles, Clock, ExternalLink, AlertCircle, Loader2, Zap, Globe, Settings, Key, CheckCircle, Newspaper } from 'lucide-react';
 import { multiAgentNewsSearch, searchWithGeminiOnly, getCategoryQuery } from '../utils/multiAgentApi';
 // @ts-ignore: No types for 'marked' yet
 import { marked } from 'marked';
@@ -54,9 +54,9 @@ function checkAPIKeys() {
   const picaTavily = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
   
   return {
-    hasGemini: !!geminiKey,
-    hasTavily: !!picaSecret && !!picaTavily,
-    hasAny: !!geminiKey || (!!picaSecret && !!picaTavily)
+    hasGemini: !!geminiKey && geminiKey !== 'your_gemini_api_key_here',
+    hasTavily: !!picaSecret && !!picaTavily && picaSecret !== 'your_pica_secret_key_here' && picaTavily !== 'your_pica_tavily_connection_key_here',
+    hasAny: (!!geminiKey && geminiKey !== 'your_gemini_api_key_here') || (!!picaSecret && !!picaTavily && picaSecret !== 'your_pica_secret_key_here' && picaTavily !== 'your_pica_tavily_connection_key_here')
   };
 }
 
@@ -201,7 +201,7 @@ export default function AIGuidedNews() {
   const getSourceName = (source: 'gemini' | 'tavily') => {
     switch (source) {
       case 'gemini':
-        return 'Google Gemini';
+        return 'Google Gemini with Search';
       case 'tavily':
         return 'Tavily Search';
       default:
@@ -233,12 +233,12 @@ export default function AIGuidedNews() {
             <h1 className="text-4xl font-bold text-gray-900">AI News Search</h1>
           </div>
           <p className="text-gray-600 text-lg max-w-3xl mx-auto">
-            Powered by Google Gemini AI for intelligent news search and analysis. Toggle Tavily fallback for enhanced coverage.
+            Powered by Google Gemini AI with real-time Google Search integration. Get current news analysis with source links.
           </p>
           <div className="flex items-center justify-center mt-4 space-x-6 text-sm text-gray-500">
             <div className="flex items-center">
               <Sparkles className="mr-1 text-blue-500" size={16} />
-              <span>Google Gemini {apiStatus.hasGemini ? '✓' : '✗'}</span>
+              <span>Google Gemini + Search {apiStatus.hasGemini ? '✓' : '✗'}</span>
             </div>
             {useTavilyFallback && (
               <div className="flex items-center">
@@ -256,9 +256,9 @@ export default function AIGuidedNews() {
               <div className="flex items-center">
                 <CheckCircle className="text-green-600 mr-3" size={20} />
                 <div>
-                  <h3 className="text-green-800 font-medium">API Configuration Ready</h3>
+                  <h3 className="text-green-800 font-medium">AI Search Ready</h3>
                   <p className="text-green-600 text-sm">
-                    {apiStatus.hasGemini && 'Gemini AI is configured. '}
+                    {apiStatus.hasGemini && 'Gemini AI with Google Search is configured. '}
                     {apiStatus.hasTavily && 'Tavily search is available as fallback.'}
                   </p>
                 </div>
@@ -278,7 +278,7 @@ export default function AIGuidedNews() {
               <div className="text-yellow-700 space-y-2">
                 <p>To use AI search, you need to configure API keys in your environment variables:</p>
                 <ul className="list-disc list-inside space-y-1 ml-4">
-                  <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_GEMINI_API_KEY</code> - For Google Gemini AI search</li>
+                  <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_GEMINI_API_KEY</code> - For Google Gemini AI with Search</li>
                   <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_PICA_SECRET_KEY</code> - For Tavily search (optional)</li>
                   <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_PICA_TAVILY_CONNECTION_KEY</code> - For Tavily search (optional)</li>
                 </ul>
@@ -427,41 +427,51 @@ export default function AIGuidedNews() {
 
         {/* Search Results */}
         {searchResponse && !isLoading && (
-          <div className="max-w-4xl mx-auto">
-            {/* AI Answer */}
+          <div className="max-w-6xl mx-auto">
+            {/* AI Answer Cards */}
             {searchResponse.answer && (
-              <div className="max-w-4xl mx-auto mb-8">
-                <div className="bg-white/80 backdrop-blur-sm rounded-xl shadow-lg p-6 mb-4">
-                  <div className="flex items-center mb-4">
-                    {getSourceIcon(searchResponse.source)}
-                    <h3 className="text-lg font-semibold text-gray-900 ml-2">
-                      {getSourceName(searchResponse.source)} Response
-                    </h3>
+              <div className="mb-8">
+                <div className="flex items-center mb-6">
+                  {getSourceIcon(searchResponse.source)}
+                  <h3 className="text-2xl font-bold text-gray-900 ml-2">
+                    {getSourceName(searchResponse.source)} Analysis
+                  </h3>
+                  <div className="ml-auto flex items-center text-gray-500 text-sm">
+                    <Clock size={14} className="mr-1" />
+                    {searchResponse.response_time.toFixed(2)}s
                   </div>
-                  <div className="prose prose-sm max-w-none text-gray-700" 
-                       dangerouslySetInnerHTML={{ __html: marked.parse(searchResponse.answer) }} />
                 </div>
                 
-                <div className="flex items-center justify-between text-gray-500 text-sm">
-                  <div className="flex items-center">
-                    <Clock size={14} className="mr-1" />
-                    Response time: {searchResponse.response_time.toFixed(2)}s
-                  </div>
-                  <div className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
-                    Source: {searchResponse.source.toUpperCase()}
-                  </div>
+                {/* Split response into cards */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {splitMarkdownSections(searchResponse.answer).map((section, idx) => (
+                    <article key={idx} className="bg-white/80 backdrop-blur-sm rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden group">
+                      <div className="p-6">
+                        {section.title && (
+                          <div className="flex items-center mb-3">
+                            <Newspaper size={16} className="text-purple-600 mr-2" />
+                            <h4 className="text-lg font-semibold text-gray-900 group-hover:text-purple-600 transition-colors">
+                              {section.title}
+                            </h4>
+                          </div>
+                        )}
+                        <div className="text-gray-700 text-sm prose prose-sm max-w-none" 
+                             dangerouslySetInnerHTML={{ __html: marked.parse(section.content) }} />
+                      </div>
+                    </article>
+                  ))}
                 </div>
               </div>
             )}
 
-            {/* News Results */}
+            {/* Source Links */}
             {searchResponse.results && searchResponse.results.length > 0 && (
-              <div className="max-w-4xl mx-auto">
-                <h3 className="text-xl font-bold text-gray-900 flex items-center mb-4">
+              <div className="mb-8">
+                <h3 className="text-xl font-bold text-gray-900 flex items-center mb-6">
                   <ExternalLink className="mr-2" size={20} />
-                  Supporting News Sources ({searchResponse.results.length})
+                  Source Links ({searchResponse.results.length})
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {searchResponse.results.map((result, index) => (
                     <article key={index} className="bg-white/80 backdrop-blur-sm rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden group">
                       <div className="p-6">
@@ -490,7 +500,7 @@ export default function AIGuidedNews() {
                           rel="noopener noreferrer"
                           className="inline-flex items-center px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 transition-colors duration-200"
                         >
-                          Read Full Article
+                          Read Source
                           <ExternalLink size={14} className="ml-2" />
                         </a>
                       </div>
@@ -500,20 +510,21 @@ export default function AIGuidedNews() {
               </div>
             )}
 
-            {/* No Results Message for Gemini */}
-            {searchResponse.source === 'gemini' && (!searchResponse.results || searchResponse.results.length === 0) && (
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mt-6">
-                <div className="flex items-center">
-                  <Sparkles className="text-blue-500 mr-3" size={20} />
-                  <div>
-                    <h3 className="text-blue-800 font-medium">Gemini Response</h3>
-                    <p className="text-blue-600 text-sm">
-                      Google Gemini provided a direct answer based on its training data and knowledge.
-                    </p>
-                  </div>
+            {/* Source Attribution */}
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-center">
+                {getSourceIcon(searchResponse.source)}
+                <div className="ml-3">
+                  <h3 className="text-blue-800 font-medium">Powered by {getSourceName(searchResponse.source)}</h3>
+                  <p className="text-blue-600 text-sm">
+                    {searchResponse.source === 'gemini' 
+                      ? 'Analysis generated using Google Gemini AI with real-time Google Search integration.'
+                      : 'Search results provided by Tavily AI search engine.'
+                    }
+                  </p>
                 </div>
               </div>
-            )}
+            </div>
           </div>
         )}
 
@@ -529,10 +540,10 @@ export default function AIGuidedNews() {
               </div>
               <div className="ml-4">
                 <div className="text-gray-600 font-medium">
-                  {useTavilyFallback ? 'Searching with AI agents...' : 'Searching with Gemini...'}
+                  {useTavilyFallback ? 'Searching with AI agents...' : 'Searching with Gemini + Google Search...'}
                 </div>
                 <div className="text-gray-500 text-sm">
-                  {useTavilyFallback ? 'Trying Gemini first, then Tavily if needed' : 'Using Google Gemini AI only'}
+                  {useTavilyFallback ? 'Trying Gemini first, then Tavily if needed' : 'Using Google Gemini AI with real-time search'}
                 </div>
               </div>
             </div>

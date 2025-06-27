@@ -9,6 +9,21 @@ interface GeminiResponse {
       }>;
     };
     finishReason: string;
+    groundingMetadata?: {
+      groundingChunks?: Array<{
+        web?: {
+          uri: string;
+          title?: string;
+        };
+      }>;
+      groundingSupports?: Array<{
+        segment?: {
+          startIndex?: number;
+          endIndex?: number;
+        };
+        groundingChunkIndices?: number[];
+      }>;
+    };
   }>;
   promptFeedback?: any;
   usageMetadata?: any;
@@ -35,12 +50,20 @@ interface TavilyResponse {
   results: TavilySearchResult[];
 }
 
+interface SearchSource {
+  title: string;
+  url: string;
+  content: string;
+  score: number;
+  published_date?: string;
+}
+
 interface MultiAgentResponse {
   source: 'gemini' | 'tavily';
   answer: string;
   query: string;
   response_time: number;
-  results?: TavilySearchResult[];
+  results?: SearchSource[];
   raw_response?: any;
 }
 
@@ -49,10 +72,104 @@ const VITE_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const PICA_SECRET_KEY = import.meta.env.VITE_PICA_SECRET_KEY;
 const PICA_TAVILY_CONNECTION_KEY = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
 
-// Gemini search using @google/genai following Google's official documentation
+// Helper to extract citations and create search results from Gemini response
+function extractGeminiSources(response: any): SearchSource[] {
+  const sources: SearchSource[] = [];
+  
+  try {
+    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+    if (!groundingMetadata) return sources;
+    
+    const chunks = groundingMetadata.groundingChunks || [];
+    const supports = groundingMetadata.groundingSupports || [];
+    
+    // Create a map of chunk indices to their content
+    const chunkMap = new Map();
+    chunks.forEach((chunk: any, index: number) => {
+      if (chunk.web?.uri) {
+        chunkMap.set(index, {
+          title: chunk.web.title || 'Source',
+          url: chunk.web.uri,
+          content: chunk.web.title || 'Referenced source from Google Search'
+        });
+      }
+    });
+    
+    // Extract unique sources from supports
+    const usedUrls = new Set();
+    supports.forEach((support: any) => {
+      if (support.groundingChunkIndices) {
+        support.groundingChunkIndices.forEach((chunkIndex: number) => {
+          const chunkData = chunkMap.get(chunkIndex);
+          if (chunkData && !usedUrls.has(chunkData.url)) {
+            usedUrls.add(chunkData.url);
+            sources.push({
+              title: chunkData.title,
+              url: chunkData.url,
+              content: chunkData.content,
+              score: 0.9, // High score for Gemini sources
+              published_date: new Date().toISOString() // Current date as fallback
+            });
+          }
+        });
+      }
+    });
+    
+    return sources;
+  } catch (error) {
+    console.warn('Error extracting Gemini sources:', error);
+    return sources;
+  }
+}
+
+// Helper to add inline citations to Gemini response text
+function addInlineCitations(response: any): string {
+  try {
+    let text = response.text || '';
+    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+    
+    if (!groundingMetadata) return text;
+    
+    const chunks = groundingMetadata.groundingChunks || [];
+    const supports = groundingMetadata.groundingSupports || [];
+    
+    // Sort supports by end_index in descending order to avoid shifting issues when inserting
+    const sortedSupports = [...supports].sort(
+      (a: any, b: any) => (b.segment?.endIndex ?? 0) - (a.segment?.endIndex ?? 0)
+    );
+    
+    for (const support of sortedSupports) {
+      const endIndex = support.segment?.endIndex;
+      if (endIndex === undefined || !support.groundingChunkIndices?.length) continue;
+      
+      const citationLinks = support.groundingChunkIndices
+        .map((i: number) => {
+          const chunk = chunks[i];
+          if (chunk?.web?.uri) {
+            const title = chunk.web.title || `Source ${i + 1}`;
+            return `[${title}](${chunk.web.uri})`;
+          }
+          return null;
+        })
+        .filter(Boolean);
+      
+      if (citationLinks.length > 0) {
+        const citationString = ` (${citationLinks.join(", ")})`;
+        text = text.slice(0, endIndex) + citationString + text.slice(endIndex);
+      }
+    }
+    
+    return text;
+  } catch (error) {
+    console.warn('Error adding inline citations:', error);
+    return response.text || '';
+  }
+}
+
+// Gemini search using @google/genai with Google Search integration
 async function searchWithGemini(query: string): Promise<MultiAgentResponse | null> {
   try {
-    console.log('Starting Gemini search with query:', query);
+    console.log('Starting Gemini search with Google Search integration for query:', query);
     
     // Check if API key is available and valid
     if (!VITE_GEMINI_API_KEY || VITE_GEMINI_API_KEY.trim() === '' || VITE_GEMINI_API_KEY === 'your_gemini_api_key_here') {
@@ -65,7 +182,6 @@ async function searchWithGemini(query: string): Promise<MultiAgentResponse | nul
     // Initialize GoogleGenAI following the official documentation
     let ai;
     try {
-      // The client gets the API key from the environment variable or explicit parameter
       ai = new GoogleGenAI({ apiKey: VITE_GEMINI_API_KEY });
       console.log('GoogleGenAI client initialized successfully');
     } catch (initError) {
@@ -73,27 +189,40 @@ async function searchWithGemini(query: string): Promise<MultiAgentResponse | nul
       throw new Error('Failed to initialize Gemini AI client. Please check your API key configuration.');
     }
     
-    // Enhanced prompt for news search with structured output
-    const prompt = `You are a news search assistant. Please provide a comprehensive answer about: "${query}"
+    // Enhanced prompt for news search with structured card-based output
+    const prompt = `You are a news search assistant with access to current web information. Please provide a comprehensive, well-structured response about: "${query}"
 
-Structure your response with clear sections using markdown headings (## or ###). Include:
-- Key facts and current developments
-- Background context if relevant  
-- Recent news and updates
-- Analysis or implications
+IMPORTANT: Structure your response as multiple focused sections using markdown headings (## or ###). Each section should be concise and suitable for display as individual cards.
 
-Keep each section concise (2-4 sentences) and use bullet points where appropriate. Focus on the most current and relevant information available.
+Create sections like:
+## Key Developments
+Brief overview of the most important recent developments (2-3 sentences)
+
+## Background Context  
+Essential background information for understanding the topic (2-3 sentences)
+
+## Recent Updates
+Latest news and developments from the past few days/weeks (2-4 bullet points)
+
+## Analysis & Impact
+What this means and potential implications (2-3 sentences)
+
+## Looking Ahead
+Future developments to watch for (1-2 sentences)
+
+Keep each section focused, concise, and informative. Use bullet points where appropriate. Ensure the information is current and factual.
 
 Query: ${query}`;
 
-    console.log('Sending request to Gemini...');
+    console.log('Sending request to Gemini with Google Search...');
     
     let response;
     try {
-      // Use the generateContent method as shown in Google's documentation
+      // Use the generateContent method with Google Search tool
       response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: prompt,
+        tools: [{ googleSearch: {} }], // Enable Google Search
         config: {
           generationConfig: {
             candidateCount: 1,
@@ -145,8 +274,8 @@ Query: ${query}`;
     
     let text;
     try {
-      // Extract text from response following Google's documentation
-      text = response.text;
+      // Extract text from response and add inline citations
+      text = addInlineCitations(response);
     } catch (textError) {
       console.error('Failed to extract text from Gemini response:', textError);
       throw new Error('Failed to extract text from Gemini response. The response may be empty or in an unexpected format.');
@@ -157,13 +286,16 @@ Query: ${query}`;
       throw new Error('Gemini returned an empty response. Please try rephrasing your query or try again later.');
     }
     
-    console.log('Gemini search successful');
+    // Extract search sources from grounding metadata
+    const sources = extractGeminiSources(response);
+    
+    console.log(`Gemini search successful with ${sources.length} sources`);
     return {
       source: "gemini",
       answer: text,
       query,
       response_time: responseTime,
-      results: undefined, // Gemini doesn't provide separate search results in this mode
+      results: sources.length > 0 ? sources : undefined,
       raw_response: response,
     };
   } catch (error) {
@@ -189,12 +321,12 @@ Query: ${query}`;
 }
 
 export async function searchWithGeminiOnly(query: string): Promise<MultiAgentResponse> {
-  console.log(`Starting Gemini-only search for: "${query}"`);
+  console.log(`Starting Gemini-only search with Google Search for: "${query}"`);
   
   try {
     const geminiResult = await searchWithGemini(query);
     if (geminiResult) {
-      console.log('Gemini search successful');
+      console.log('Gemini search with Google Search successful');
       return geminiResult;
     }
     
@@ -268,13 +400,22 @@ async function searchWithTavily(query: string): Promise<MultiAgentResponse> {
     const data: TavilyResponse = await response.json();
     const responseTime = (Date.now() - startTime) / 1000;
 
+    // Convert Tavily results to our SearchSource format
+    const sources: SearchSource[] = (data.results || []).map(result => ({
+      title: result.title,
+      url: result.url,
+      content: result.content,
+      score: result.score,
+      published_date: result.published_date
+    }));
+
     console.log('Tavily search successful');
     return {
       source: 'tavily',
       answer: data.answer || 'No summary available',
       query: data.query,
       response_time: responseTime,
-      results: data.results || [],
+      results: sources,
       raw_response: data
     };
   } catch (error) {
