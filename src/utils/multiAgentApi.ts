@@ -44,24 +44,47 @@ interface MultiAgentResponse {
   raw_response?: any;
 }
 
-// Get API keys from environment variables
+// Get API keys from environment variables with better error handling
 const VITE_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const PICA_SECRET_KEY = import.meta.env.VITE_PICA_SECRET_KEY;
 const PICA_TAVILY_CONNECTION_KEY = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
+
+// Debug logging for environment variables (remove in production)
+console.log('Environment variables check:', {
+  hasGeminiKey: !!VITE_GEMINI_API_KEY,
+  hasPicaSecret: !!PICA_SECRET_KEY,
+  hasPicaTavily: !!PICA_TAVILY_CONNECTION_KEY,
+  geminiKeyLength: VITE_GEMINI_API_KEY ? VITE_GEMINI_API_KEY.length : 0
+});
 
 // Gemini search using @google/genai with proper configuration
 async function searchWithGemini(query: string): Promise<MultiAgentResponse | null> {
   try {
     console.log('Starting Gemini search with query:', query);
     
-    // Check if API key is available
-    if (!VITE_GEMINI_API_KEY) {
-      console.error('Gemini API key not found in environment variables');
-      throw new Error('Gemini API key not configured. Please add VITE_GEMINI_API_KEY to your environment variables.');
+    // Check if API key is available and valid
+    if (!VITE_GEMINI_API_KEY || VITE_GEMINI_API_KEY.trim() === '') {
+      console.error('Gemini API key not found or empty in environment variables');
+      console.error('Expected: VITE_GEMINI_API_KEY, Got:', VITE_GEMINI_API_KEY ? `${VITE_GEMINI_API_KEY.substring(0, 10)}...` : 'undefined');
+      throw new Error('Gemini API key not configured. Please add VITE_GEMINI_API_KEY to your environment variables and restart the development server.');
+    }
+    
+    // Validate API key format (basic check)
+    if (!VITE_GEMINI_API_KEY.startsWith('AIza')) {
+      console.error('Invalid Gemini API key format. Expected key to start with "AIza"');
+      throw new Error('Invalid Gemini API key format. Please check your VITE_GEMINI_API_KEY in the environment variables.');
     }
     
     const startTime = Date.now();
-    const genAI = new GoogleGenAI(VITE_GEMINI_API_KEY);
+    
+    // Initialize GoogleGenAI with explicit error handling
+    let genAI;
+    try {
+      genAI = new GoogleGenAI(VITE_GEMINI_API_KEY);
+    } catch (initError) {
+      console.error('Failed to initialize GoogleGenAI:', initError);
+      throw new Error('Failed to initialize Gemini AI client. Please check your API key configuration.');
+    }
     
     // Create the model with proper configuration
     const model = genAI.getGenerativeModel({ 
@@ -121,6 +144,9 @@ Query: ${query}`;
       }
       if (error.message.includes('SAFETY')) {
         throw new Error('Content was blocked by Gemini safety filters. Please try a different query.');
+      }
+      if (error.message.includes('API Key must be set')) {
+        throw new Error('Gemini API key is not properly configured. Please ensure VITE_GEMINI_API_KEY is set in your .env file and restart the development server.');
       }
     }
     
