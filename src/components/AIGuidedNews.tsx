@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Bot, Sparkles, Clock, ExternalLink, AlertCircle, Loader2, Zap, Globe, Settings } from 'lucide-react';
+import { Search, Bot, Sparkles, Clock, ExternalLink, AlertCircle, Loader2, Zap, Globe, Settings, Key } from 'lucide-react';
 import { multiAgentNewsSearch, searchWithGeminiOnly, getCategoryQuery } from '../utils/multiAgentApi';
 // @ts-ignore: No types for 'marked' yet
 import { marked } from 'marked';
@@ -26,6 +26,7 @@ function splitMarkdownSections(markdown: string): { title: string; content: stri
   const sections: { title: string; content: string }[] = [];
   let currentTitle = '';
   let currentContent = '';
+  
   for (const line of lines) {
     const headingMatch = line.match(/^##+\s+(.*)/);
     if (headingMatch) {
@@ -38,10 +39,25 @@ function splitMarkdownSections(markdown: string): { title: string; content: stri
       currentContent += line + '\n';
     }
   }
+  
   if (currentContent.trim()) {
     sections.push({ title: currentTitle, content: currentContent.trim() });
   }
+  
   return sections.length > 0 ? sections : [{ title: '', content: markdown }];
+}
+
+// Check if API keys are configured
+function checkAPIKeys() {
+  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const picaSecret = import.meta.env.VITE_PICA_SECRET_KEY;
+  const picaTavily = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
+  
+  return {
+    hasGemini: !!geminiKey,
+    hasTavily: !!picaSecret && !!picaTavily,
+    hasAny: !!geminiKey || (!!picaSecret && !!picaTavily)
+  };
 }
 
 export default function AIGuidedNews() {
@@ -50,6 +66,8 @@ export default function AIGuidedNews() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [useTavilyFallback, setUseTavilyFallback] = useState(false);
+
+  const apiStatus = checkAPIKeys();
 
   const categories = [
     'World Events',
@@ -116,21 +134,29 @@ export default function AIGuidedNews() {
   const handleSearch = async (searchQuery: string) => {
     if (!searchQuery.trim()) return;
     
+    if (!apiStatus.hasAny) {
+      setError('No API keys configured. Please set up your API keys in the environment variables to use AI search.');
+      return;
+    }
+    
     setIsLoading(true);
     setError(null);
     
     try {
       let response;
-      if (useTavilyFallback) {
+      if (useTavilyFallback && apiStatus.hasTavily) {
         // Use multi-agent search (Gemini first, then Tavily fallback)
         response = await multiAgentNewsSearch(searchQuery);
-      } else {
+      } else if (apiStatus.hasGemini) {
         // Use Gemini only
         response = await searchWithGeminiOnly(searchQuery);
+      } else {
+        throw new Error('No valid API configuration found. Please check your environment variables.');
       }
       setSearchResponse(response);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to search news');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to search news';
+      setError(errorMessage);
       console.error('AI search error:', err);
     } finally {
       setIsLoading(false);
@@ -212,16 +238,39 @@ export default function AIGuidedNews() {
           <div className="flex items-center justify-center mt-4 space-x-6 text-sm text-gray-500">
             <div className="flex items-center">
               <Sparkles className="mr-1 text-blue-500" size={16} />
-              <span>Google Gemini (Primary)</span>
+              <span>Google Gemini {apiStatus.hasGemini ? '✓' : '✗'}</span>
             </div>
             {useTavilyFallback && (
               <div className="flex items-center">
                 <Globe className="mr-1 text-green-500" size={16} />
-                <span>Tavily Search (Fallback)</span>
+                <span>Tavily Search {apiStatus.hasTavily ? '✓' : '✗'}</span>
               </div>
             )}
           </div>
         </header>
+
+        {/* API Key Status Warning */}
+        {!apiStatus.hasAny && (
+          <div className="max-w-4xl mx-auto mb-8">
+            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6">
+              <div className="flex items-center mb-4">
+                <Key className="text-yellow-600 mr-3" size={24} />
+                <h3 className="text-yellow-800 font-bold text-lg">API Keys Required</h3>
+              </div>
+              <div className="text-yellow-700 space-y-2">
+                <p>To use AI search, you need to configure API keys in your environment variables:</p>
+                <ul className="list-disc list-inside space-y-1 ml-4">
+                  <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_GEMINI_API_KEY</code> - For Google Gemini AI search</li>
+                  <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_PICA_SECRET_KEY</code> - For Tavily search (optional)</li>
+                  <li><code className="bg-yellow-100 px-2 py-1 rounded">VITE_PICA_TAVILY_CONNECTION_KEY</code> - For Tavily search (optional)</li>
+                </ul>
+                <p className="text-sm mt-3">
+                  Create a <code className="bg-yellow-100 px-2 py-1 rounded">.env</code> file in your project root and add these keys.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Search Configuration */}
         <div className="max-w-4xl mx-auto mb-8">
@@ -235,9 +284,10 @@ export default function AIGuidedNews() {
                 <span className="text-sm text-gray-600">Gemini Only</span>
                 <button
                   onClick={() => setUseTavilyFallback(!useTavilyFallback)}
+                  disabled={!apiStatus.hasTavily}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                     useTavilyFallback ? 'bg-green-600' : 'bg-gray-300'
-                  }`}
+                  } ${!apiStatus.hasTavily ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
@@ -248,7 +298,7 @@ export default function AIGuidedNews() {
                 <span className="text-sm text-gray-600">Enable Tavily Fallback</span>
               </div>
             </div>
-            {useTavilyFallback && (
+            {useTavilyFallback && apiStatus.hasTavily && (
               <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <p className="text-sm text-yellow-800">
                   <strong>Cost Warning:</strong> Tavily fallback enabled. This will use Tavily search if Gemini cannot provide current information, which may incur additional costs.
@@ -271,12 +321,12 @@ export default function AIGuidedNews() {
                   onKeyPress={(e) => e.key === 'Enter' && handleSearch(query)}
                   placeholder="Ask about current events, politics, technology, or any news topic..."
                   className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent text-lg"
-                  disabled={isLoading}
+                  disabled={isLoading || !apiStatus.hasAny}
                 />
               </div>
               <button
                 onClick={() => handleSearch(query)}
-                disabled={isLoading || !query.trim()}
+                disabled={isLoading || !query.trim() || !apiStatus.hasAny}
                 className="px-8 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-xl flex items-center"
               >
                 {isLoading ? (
@@ -291,24 +341,26 @@ export default function AIGuidedNews() {
         </div>
 
         {/* Category Buttons */}
-        <div className="max-w-4xl mx-auto mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Quick Categories</h3>
-          <div className="flex flex-wrap justify-center gap-3">
-            {categories.map(category => (
-              <button
-                key={category}
-                onClick={() => handleCategoryClick(category)}
-                disabled={isLoading}
-                className="px-4 py-2 bg-white/80 backdrop-blur-sm border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-all duration-200 text-sm font-medium disabled:opacity-50"
-              >
-                {category}
-              </button>
-            ))}
+        {apiStatus.hasAny && (
+          <div className="max-w-4xl mx-auto mb-8">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Quick Categories</h3>
+            <div className="flex flex-wrap justify-center gap-3">
+              {categories.map(category => (
+                <button
+                  key={category}
+                  onClick={() => handleCategoryClick(category)}
+                  disabled={isLoading}
+                  className="px-4 py-2 bg-white/80 backdrop-blur-sm border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-all duration-200 text-sm font-medium disabled:opacity-50"
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Sample Questions */}
-        {!searchResponse && !isLoading && (
+        {!searchResponse && !isLoading && apiStatus.hasAny && (
           <div className="max-w-4xl mx-auto mb-8">
             <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg p-6">
               <h3 className="text-xl font-bold text-gray-900 mb-6 text-center flex items-center justify-center">

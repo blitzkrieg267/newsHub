@@ -44,21 +44,28 @@ interface MultiAgentResponse {
   raw_response?: any;
 }
 
+// Get API keys from environment variables
+const VITE_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const PICA_SECRET_KEY = import.meta.env.VITE_PICA_SECRET_KEY;
+const PICA_TAVILY_CONNECTION_KEY = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
 
 // Helper to add inline citations to Gemini response text
 type GeminiCitation = { uri: string; index: number };
 function addCitations(response: any): { text: string; citations: GeminiCitation[] } {
-  let text = response.text;
+  let text = response.text || '';
   const supports = response.candidates?.[0]?.groundingMetadata?.groundingSupports || [];
   const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
   const citations: GeminiCitation[] = [];
+  
   // Sort supports by end_index in descending order to avoid shifting issues when inserting.
   const sortedSupports = [...supports].sort(
     (a: any, b: any) => (b.segment?.endIndex ?? 0) - (a.segment?.endIndex ?? 0)
   );
+  
   for (const support of sortedSupports) {
     const endIndex = support.segment?.endIndex;
     if (endIndex === undefined || !support.groundingChunkIndices?.length) continue;
+    
     const citationLinks = support.groundingChunkIndices
       .map((i: number) => {
         const uri = chunks[i]?.web?.uri;
@@ -69,19 +76,30 @@ function addCitations(response: any): { text: string; citations: GeminiCitation[
         return null;
       })
       .filter(Boolean);
+    
     if (citationLinks.length > 0) {
       const citationString = citationLinks.join(", ");
       text = text.slice(0, endIndex) + citationString + text.slice(endIndex);
     }
   }
+  
   return { text, citations };
 }
 
 // Gemini search using @google/genai
 async function searchWithGemini(query: string): Promise<MultiAgentResponse | null> {
   try {
+    console.log('Starting Gemini search with query:', query);
+    
+    // Check if API key is available
+    if (!VITE_GEMINI_API_KEY) {
+      console.error('Gemini API key not found in environment variables');
+      throw new Error('Gemini API key not configured. Please add VITE_GEMINI_API_KEY to your environment variables.');
+    }
+    
     const startTime = Date.now();
-    const ai = new GoogleGenAI({ apiKey: VITE_GEMINI_API_KEY }); // API key from env
+    const ai = new GoogleGenAI(VITE_GEMINI_API_KEY);
+    
     // Enhanced system prompt for card-based, concise, multi-section markdown output
     const systemPrompt = `You are an AI news and current affairs search assistant with real-time web access. 
 
@@ -95,23 +113,32 @@ When answering, ALWAYS:
 - If you cite sources, use markdown links.
 
 User Query: ${query}`;
-    const config = {
-      tools: [{ googleSearch: {} }],
+
+    const model = ai.getGenerativeModel({ 
+      model: "gemini-1.5-flash",
+      tools: [{ googleSearchRetrieval: {} }],
       generationConfig: {
         candidateCount: 1,
         maxOutputTokens: 512,
         temperature: 0.2,
-        thinkingBudget: 0, // prioritize speed/cost
       },
-    };
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: systemPrompt,
-      ...config,
     });
+
+    console.log('Sending request to Gemini...');
+    const result = await model.generateContent(systemPrompt);
+    const response = await result.response;
     const responseTime = (Date.now() - startTime) / 1000;
-    if (!response.text?.trim()) return null;
-    const { text, citations } = addCitations(response);
+    
+    console.log('Gemini response received:', response);
+    
+    const text = response.text();
+    if (!text?.trim()) {
+      console.warn('Gemini returned empty response');
+      return null;
+    }
+    
+    const { text: processedText, citations } = addCitations({ text, candidates: response.candidates });
+    
     let results: TavilySearchResult[] | undefined = undefined;
     if (citations.length > 0) {
       results = citations.map((c) => ({
@@ -121,33 +148,45 @@ User Query: ${query}`;
         score: 1,
       }));
     }
+    
+    console.log('Gemini search successful');
     return {
       source: "gemini",
-      answer: text,
+      answer: processedText,
       query,
       response_time: responseTime,
       results,
       raw_response: response,
     };
   } catch (error) {
-    console.warn("Gemini search failed:", error);
+    console.error("Gemini search failed:", error);
     return null;
   }
 }
 
 export async function searchWithGeminiOnly(query: string): Promise<MultiAgentResponse> {
   console.log(`Starting Gemini-only search for: "${query}"`);
+  
   const geminiResult = await searchWithGemini(query);
   if (geminiResult) {
     console.log('Gemini search successful');
     return geminiResult;
   }
+  
   // If Gemini fails, throw an error instead of falling back
   throw new Error('Gemini AI is unable to access current information for this query. Please enable Tavily fallback for enhanced search capabilities.');
 }
 
 async function searchWithTavily(query: string): Promise<MultiAgentResponse> {
   try {
+    console.log('Starting Tavily search with query:', query);
+    
+    // Check if API keys are available
+    if (!PICA_SECRET_KEY || !PICA_TAVILY_CONNECTION_KEY) {
+      console.error('Tavily API keys not found in environment variables');
+      throw new Error('Tavily API keys not configured. Please add VITE_PICA_SECRET_KEY and VITE_PICA_TAVILY_CONNECTION_KEY to your environment variables.');
+    }
+    
     const startTime = Date.now();
     
     const response = await fetch('https://api.picaos.com/v1/passthrough/search', {
@@ -170,12 +209,15 @@ async function searchWithTavily(query: string): Promise<MultiAgentResponse> {
     });
 
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Tavily API error:', response.status, response.statusText, errorText);
       throw new Error(`Tavily API request failed: ${response.status} ${response.statusText}`);
     }
 
     const data: TavilyResponse = await response.json();
     const responseTime = (Date.now() - startTime) / 1000;
 
+    console.log('Tavily search successful');
     return {
       source: 'tavily',
       answer: data.answer || 'No summary available',
@@ -186,12 +228,13 @@ async function searchWithTavily(query: string): Promise<MultiAgentResponse> {
     };
   } catch (error) {
     console.error('Tavily search failed:', error);
-    throw new Error('Failed to search news. Please try again.');
+    throw error;
   }
 }
 
 export async function multiAgentNewsSearch(query: string): Promise<MultiAgentResponse> {
   console.log(`Starting multi-agent search for: "${query}"`);
+  
   // 1. Try Gemini first
   console.log('Attempting search with Gemini...');
   const geminiResult = await searchWithGemini(query);
@@ -199,6 +242,7 @@ export async function multiAgentNewsSearch(query: string): Promise<MultiAgentRes
     console.log('Gemini search successful');
     return geminiResult;
   }
+  
   // 2. Fallback to Tavily
   console.log('Gemini failed or returned fallback, switching to Tavily...');
   const tavilyResult = await searchWithTavily(query);
