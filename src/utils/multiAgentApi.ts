@@ -49,15 +49,7 @@ const VITE_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const PICA_SECRET_KEY = import.meta.env.VITE_PICA_SECRET_KEY;
 const PICA_TAVILY_CONNECTION_KEY = import.meta.env.VITE_PICA_TAVILY_CONNECTION_KEY;
 
-// Debug logging for environment variables (remove in production)
-console.log('Environment variables check:', {
-  hasGeminiKey: !!VITE_GEMINI_API_KEY,
-  hasPicaSecret: !!PICA_SECRET_KEY,
-  hasPicaTavily: !!PICA_TAVILY_CONNECTION_KEY,
-  geminiKeyLength: VITE_GEMINI_API_KEY ? VITE_GEMINI_API_KEY.length : 0
-});
-
-// Gemini search using @google/genai with proper configuration
+// Gemini search using @google/genai following Google's official documentation
 async function searchWithGemini(query: string): Promise<MultiAgentResponse | null> {
   try {
     console.log('Starting Gemini search with query:', query);
@@ -65,57 +57,28 @@ async function searchWithGemini(query: string): Promise<MultiAgentResponse | nul
     // Check if API key is available and valid
     if (!VITE_GEMINI_API_KEY || VITE_GEMINI_API_KEY.trim() === '' || VITE_GEMINI_API_KEY === 'your_gemini_api_key_here') {
       console.error('Gemini API key not found, empty, or using placeholder value');
-      console.error('Expected: VITE_GEMINI_API_KEY, Got:', VITE_GEMINI_API_KEY ? `${VITE_GEMINI_API_KEY.substring(0, 10)}...` : 'undefined');
-      throw new Error('Gemini API key not configured. Please add your actual VITE_GEMINI_API_KEY to your .env file and restart the development server. Get your API key from https://makersuite.google.com/app/apikey');
-    }
-    
-    // Validate API key format (basic check)
-    if (!VITE_GEMINI_API_KEY.startsWith('AIza')) {
-      console.error('Invalid Gemini API key format. Expected key to start with "AIza"');
-      throw new Error('Invalid Gemini API key format. Please check your VITE_GEMINI_API_KEY in the .env file. The key should start with "AIza".');
+      throw new Error('Gemini API key not configured. Please set VITE_GEMINI_API_KEY in your .env file. Get your API key from https://makersuite.google.com/app/apikey');
     }
     
     const startTime = Date.now();
     
-    // Initialize GoogleGenAI with explicit error handling
-    let genAI;
+    // Initialize GoogleGenAI following the official documentation
+    let ai;
     try {
-      genAI = new GoogleGenAI(VITE_GEMINI_API_KEY);
+      // The client gets the API key from the environment variable or explicit parameter
+      ai = new GoogleGenAI({ apiKey: VITE_GEMINI_API_KEY });
       console.log('GoogleGenAI client initialized successfully');
     } catch (initError) {
       console.error('Failed to initialize GoogleGenAI:', initError);
-      
-      // Check if it's a module loading issue
-      if (initError instanceof Error && initError.message.includes('GoogleGenAI is not a constructor')) {
-        throw new Error('Failed to load Google Gemini AI library. Please ensure @google/genai is properly installed. Try running: npm install @google/genai');
-      }
-      
-      throw new Error('Failed to initialize Gemini AI client. Please check your API key configuration and ensure the @google/genai package is properly installed.');
+      throw new Error('Failed to initialize Gemini AI client. Please check your API key configuration.');
     }
     
-    // Create the model with proper configuration
-    let model;
-    try {
-      model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        generationConfig: {
-          candidateCount: 1,
-          maxOutputTokens: 1024,
-          temperature: 0.3,
-        },
-      });
-      console.log('Gemini model configured successfully');
-    } catch (modelError) {
-      console.error('Failed to configure Gemini model:', modelError);
-      throw new Error('Failed to configure Gemini AI model. Please check your API key permissions and quota.');
-    }
-
-    // Enhanced prompt for news search
+    // Enhanced prompt for news search with structured output
     const prompt = `You are a news search assistant. Please provide a comprehensive answer about: "${query}"
 
 Structure your response with clear sections using markdown headings (## or ###). Include:
 - Key facts and current developments
-- Background context if relevant
+- Background context if relevant  
 - Recent news and updates
 - Analysis or implications
 
@@ -125,46 +88,55 @@ Query: ${query}`;
 
     console.log('Sending request to Gemini...');
     
-    let result;
+    let response;
     try {
-      result = await model.generateContent(prompt);
+      // Use the generateContent method as shown in Google's documentation
+      response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          generationConfig: {
+            candidateCount: 1,
+            maxOutputTokens: 1024,
+            temperature: 0.3,
+          },
+          // Disable thinking to prioritize speed and minimize costs
+          thinkingConfig: {
+            thinkingBudget: 0,
+          },
+        }
+      });
     } catch (generateError) {
       console.error('Gemini content generation failed:', generateError);
       
       // Handle specific Gemini API errors
       if (generateError instanceof Error) {
-        if (generateError.message.includes('API_KEY_INVALID') || generateError.message.includes('401')) {
-          throw new Error('Invalid Gemini API key. Please verify your VITE_GEMINI_API_KEY in the .env file is correct and has proper permissions.');
+        const errorMessage = generateError.message.toLowerCase();
+        
+        if (errorMessage.includes('api key') || errorMessage.includes('invalid') || errorMessage.includes('401')) {
+          throw new Error('Invalid Gemini API key. Please verify your VITE_GEMINI_API_KEY in the .env file is correct.');
         }
-        if (generateError.message.includes('QUOTA_EXCEEDED') || generateError.message.includes('429')) {
+        if (errorMessage.includes('quota') || errorMessage.includes('429')) {
           throw new Error('Gemini API quota exceeded. Please check your billing settings or try again later.');
         }
-        if (generateError.message.includes('SAFETY')) {
+        if (errorMessage.includes('safety') || errorMessage.includes('blocked')) {
           throw new Error('Content was blocked by Gemini safety filters. Please try a different, more neutral query.');
         }
-        if (generateError.message.includes('PERMISSION_DENIED') || generateError.message.includes('403')) {
-          throw new Error('Permission denied. Please check your Gemini API key permissions and ensure the Generative AI API is enabled in your Google Cloud project.');
+        if (errorMessage.includes('permission') || errorMessage.includes('403')) {
+          throw new Error('Permission denied. Please check your Gemini API key permissions and ensure the Generative AI API is enabled.');
         }
-        if (generateError.message.includes('NOT_FOUND') || generateError.message.includes('404')) {
-          throw new Error('Gemini API endpoint not found. Please ensure you are using the correct API key and the service is available in your region.');
+        if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+          throw new Error('Gemini API endpoint not found. Please ensure you are using the correct API key.');
         }
-        if (generateError.message.includes('INTERNAL') || generateError.message.includes('500')) {
+        if (errorMessage.includes('internal') || errorMessage.includes('500')) {
           throw new Error('Gemini API internal error. Please try again in a few moments.');
         }
-        if (generateError.message.includes('UNAVAILABLE') || generateError.message.includes('503')) {
+        if (errorMessage.includes('unavailable') || errorMessage.includes('503')) {
           throw new Error('Gemini API is temporarily unavailable. Please try again later.');
         }
       }
       
-      throw new Error(`Gemini API request failed: ${generateError instanceof Error ? generateError.message : 'Unknown error'}. Please try again or check your API configuration.`);
-    }
-    
-    let response;
-    try {
-      response = result.response;
-    } catch (responseError) {
-      console.error('Failed to get response from Gemini result:', responseError);
-      throw new Error('Failed to process Gemini response. The API may have returned an unexpected format.');
+      throw new Error(`Gemini API request failed: ${generateError instanceof Error ? generateError.message : 'Unknown error'}`);
     }
     
     const responseTime = (Date.now() - startTime) / 1000;
@@ -173,7 +145,8 @@ Query: ${query}`;
     
     let text;
     try {
-      text = response.text();
+      // Extract text from response following Google's documentation
+      text = response.text;
     } catch (textError) {
       console.error('Failed to extract text from Gemini response:', textError);
       throw new Error('Failed to extract text from Gemini response. The response may be empty or in an unexpected format.');
@@ -211,7 +184,7 @@ Query: ${query}`;
     }
     
     // Generic fallback for unexpected errors
-    throw new Error(`Unexpected error during Gemini search: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again or check your configuration.`);
+    throw new Error(`Unexpected error during Gemini search: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -343,7 +316,7 @@ export async function multiAgentNewsSearch(query: string): Promise<MultiAgentRes
     return tavilyResult;
   } catch (tavilyError) {
     console.error('Both Gemini and Tavily searches failed');
-    throw new Error(`All search methods failed. Gemini: ${geminiError instanceof Error ? geminiError.message : 'Unknown error'}. Tavily: ${tavilyError instanceof Error ? tavilyError.message : 'Unknown error'}. Please check your API configurations.`);
+    throw new Error(`All search methods failed. Please check your API configurations and try again.`);
   }
 }
 

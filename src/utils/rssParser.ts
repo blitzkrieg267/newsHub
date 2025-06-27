@@ -3,44 +3,71 @@ import { categorizeNews } from './categorizer';
 
 export async function fetchRSSFeed(url: string, sourceName: string): Promise<NewsItem[]> {
   try {
-    // Use a CORS proxy for external RSS feeds
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    // Use multiple CORS proxy services for better reliability
+    const proxyUrls = [
+      `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+      `https://corsproxy.io/?${encodeURIComponent(url)}`,
+      `https://cors-anywhere.herokuapp.com/${url}`
+    ];
     
     console.log(`Fetching RSS feed from ${sourceName}: ${url}`);
     
-    const response = await fetch(proxyUrl);
-    
-    // Check if the fetch request was successful
-    if (!response.ok) {
-      console.error(`CORS proxy request failed for ${sourceName}: ${response.status} ${response.statusText}`);
-      throw new Error(`CORS proxy returned ${response.status}: ${response.statusText}. The RSS feed may be temporarily unavailable.`);
-    }
-    
     let data;
-    try {
-      data = await response.json();
-    } catch (jsonError) {
-      console.error(`Failed to parse JSON response from CORS proxy for ${sourceName}:`, jsonError);
-      throw new Error(`Invalid response from CORS proxy. The RSS feed service may be experiencing issues.`);
+    let lastError;
+    
+    // Try each proxy service until one works
+    for (let i = 0; i < proxyUrls.length; i++) {
+      try {
+        console.log(`Trying proxy ${i + 1}/${proxyUrls.length} for ${sourceName}`);
+        const response = await fetch(proxyUrls[i], {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; NewsHub/1.0)',
+          },
+          signal: AbortSignal.timeout(10000) // 10 second timeout
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        if (i === 0) {
+          // allorigins.win returns JSON
+          data = await response.json();
+          if (!data || !data.contents) {
+            throw new Error('Empty response from proxy');
+          }
+          data = data.contents;
+        } else {
+          // Other proxies return the content directly
+          data = await response.text();
+        }
+        
+        if (!data || !data.trim()) {
+          throw new Error('Empty content received');
+        }
+        
+        console.log(`Successfully fetched from ${sourceName} using proxy ${i + 1}`);
+        break;
+      } catch (error) {
+        lastError = error;
+        console.warn(`Proxy ${i + 1} failed for ${sourceName}:`, error instanceof Error ? error.message : error);
+        
+        // If this is the last proxy, we'll throw the error
+        if (i === proxyUrls.length - 1) {
+          throw error;
+        }
+      }
     }
     
-    // Check if the proxy response contains the expected contents field
-    if (!data || !data.contents) {
-      console.error(`CORS proxy returned empty or invalid data for ${sourceName}:`, data);
-      throw new Error(`CORS proxy returned empty content. The RSS feed at ${url} may be unavailable or the proxy service is experiencing issues.`);
-    }
-    
-    // Check if the contents field is empty or just whitespace
-    if (!data.contents.trim()) {
-      console.error(`CORS proxy returned empty contents for ${sourceName}`);
-      throw new Error(`RSS feed returned empty content. The feed at ${url} may be temporarily unavailable.`);
+    if (!data) {
+      throw new Error('All proxy services failed');
     }
     
     const parser = new DOMParser();
     let xmlDoc;
     
     try {
-      xmlDoc = parser.parseFromString(data.contents, 'text/xml');
+      xmlDoc = parser.parseFromString(data, 'text/xml');
     } catch (parseError) {
       console.error(`Failed to parse XML for ${sourceName}:`, parseError);
       throw new Error(`Invalid XML format in RSS feed. The feed may be corrupted or not a valid RSS feed.`);
@@ -76,7 +103,6 @@ export async function fetchRSSFeed(url: string, sourceName: string): Promise<New
         
         // Skip items without essential fields
         if (!title.trim() || !link.trim()) {
-          console.log(`Skipping article from ${sourceName}: missing title or link`);
           return;
         }
         
@@ -92,18 +118,15 @@ export async function fetchRSSFeed(url: string, sourceName: string): Promise<New
           
           // Check if the date is valid and within the past year
           if (isNaN(pubDate.getTime()) || pubDate < oneYearAgo) {
-            console.log(`Skipping article from ${sourceName}: "${title}" - Date: ${pubDateString} (older than 1 year or invalid)`);
             return;
           }
           
           // Also skip future dates (likely invalid)
           const now = new Date();
           if (pubDate > now) {
-            console.log(`Skipping article from ${sourceName}: "${title}" - Date: ${pubDateString} (future date)`);
             return;
           }
         } catch (error) {
-          console.log(`Skipping article from ${sourceName}: "${title}" - Invalid date: ${pubDateString}`);
           return;
         }
         
@@ -153,16 +176,18 @@ export async function fetchRSSFeed(url: string, sourceName: string): Promise<New
     
     // Provide more specific error messages based on error type
     if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-      throw new Error(`Network error: Unable to reach the RSS feed or CORS proxy. This could be due to network connectivity issues, the RSS feed being temporarily unavailable, or the CORS proxy service being down.`);
+      console.warn(`Network error for ${sourceName}, skipping...`);
+      return []; // Return empty array instead of throwing to allow other feeds to load
     }
     
-    // Re-throw the error with the original message if it's already descriptive
-    if (error instanceof Error && error.message.includes('CORS proxy') || error.message.includes('RSS feed')) {
-      throw error;
+    if (error instanceof Error && error.message.includes('timeout')) {
+      console.warn(`Timeout error for ${sourceName}, skipping...`);
+      return []; // Return empty array for timeout errors
     }
     
-    // Generic fallback error message
-    throw new Error(`Failed to fetch RSS feed from ${sourceName}. The feed may be temporarily unavailable or experiencing issues.`);
+    // For other errors, also return empty array to be more resilient
+    console.warn(`Error loading ${sourceName}, skipping:`, error instanceof Error ? error.message : error);
+    return [];
   }
 }
 
